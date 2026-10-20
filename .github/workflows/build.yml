@@ -1,0 +1,112 @@
+name: Build cupid kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      lineage_branch:
+        description: "LineageOS kernel branch"
+        required: true
+        default: "lineage-24.0"
+        type: choice
+        options:
+          - lineage-24.0
+          - lineage-23.2
+          - lineage-23.0
+          - lineage-22.2
+      ksu_ref:
+        description: "BakaSU tag/commit/branch (sync-susfs = SUSFS-enabled)"
+        required: true
+        default: "sync-susfs"
+      susfs_branch:
+        description: "susfs4ksu branch (empty = auto-detect)"
+        required: false
+        default: ""
+      lto:
+        description: "LTO mode"
+        required: true
+        default: "thin"
+        type: choice
+        options: [thin, full]
+      localversion:
+        description: "Kernel localversion suffix override (e.g. -gki+)"
+        required: false
+        default: ""
+      fast:
+        description: "Disable CONFIG_DEBUG_INFO (faster, smaller build)"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+                      /usr/share/swift /usr/local/.ghcup /opt/az \
+                      /usr/share/miniconda
+          sudo docker image prune -af || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        run: bash ./scripts/install-deps.sh
+
+      - name: Build kernel
+        shell: bash
+        run: |
+          args=(--lineage "${{ inputs.lineage_branch }}" --ksu "${{ inputs.ksu_ref }}" --lto "${{ inputs.lto }}")
+          if [ -n "${{ inputs.susfs_branch }}" ]; then
+            args+=(--susfs "${{ inputs.susfs_branch }}")
+          fi
+          if [ -n "${{ inputs.localversion }}" ]; then
+            args+=(--localversion "${{ inputs.localversion }}")
+          fi
+          if [ "${{ inputs.fast }}" = "true" ]; then
+            args+=(--fast)
+          fi
+          bash ./build.sh "${args[@]}"
+
+      - name: Show results
+        if: always()
+        run: |
+          echo "::group::kernel-release.txt"
+          cat dist/kernel-release.txt 2>/dev/null || true
+          echo "::endgroup::"
+          echo "::group::dist"
+          ls -lah dist 2>/dev/null || true
+          echo "::endgroup::"
+
+      - name: Upload artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baksu-susfs-cupid-${{ inputs.lineage_branch }}
+          path: |
+            dist/Image
+            dist/*.zip
+            dist/kernel-release.txt
+            dist/kernel.config
+            dist/FLASH.txt
+            dist/logs/build.log
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-failure-${{ github.run_id }}
+          path: dist/logs/build.log
+          if-no-files-found: ignore
+          retention-days: 7

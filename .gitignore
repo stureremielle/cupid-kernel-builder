@@ -1,0 +1,9 @@
+work/
+dist/
+*.rej
+*.orig
+*.log
+.DS_Store
+
+__pycache__/
+*.pyc
