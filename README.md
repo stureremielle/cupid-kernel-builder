@@ -339,12 +339,17 @@ it detects a mismatch against the phone/stock boot image.
   `https://mirrorbits.lineageos.org/full/cupid/<build-date>/boot.img`
   (also linked on the download page), so you do not need the whole OTA.
 
-  Then capture the failed boot's kernel log before rebooting again:
+  Then capture the failed boot's kernel log. `/sys/fs/pstore` is root-only, so
+  `adb root` first (LineageOS nightlies are userdebug builds):
 
   ```bash
-  adb shell ls -l /sys/fs/pstore/
-  adb shell cat /sys/fs/pstore/console-ramoops-0 > failed-boot.log
+  adb root
+  adb shell ls -la /sys/fs/pstore/
+  adb pull /sys/fs/pstore/console-ramoops-0 failed-boot.log
   ```
+
+  If `adb root` is refused on your build, reboot into Lineage recovery, where
+  adbd already runs as root, and read pstore there.
 
   Also try in fastboot: `fastboot oem last_kmsg` and
   `fastboot getvar current-slot`.
