@@ -48,6 +48,7 @@ EXPECTED_RELEASE=""
 PATCH_ONLY=0
 NO_AK3=0
 FAST=0
+ALLOW_MISMATCH=0
 INSTALL_DEPS=0
 FRESH=0
 
@@ -99,7 +100,9 @@ Options:
   --susfs-ref REF      Pin SUSFS to a commit (default: known-good $SUSFS_PIN;
                        use 'latest' to track the branch tip)
   --lto MODE           thin (faster) or full (matches stock config) (default: $LTO)
-  --localversion SUF   Exact kernel localversion suffix, e.g. '-gki+'.
+  --localversion SUF   Exact kernel localversion suffix, e.g. '-gki-<kernel-sha>'.
+                       Sets CONFIG_LOCALVERSION and disables AUTOVERSION.
+                       Use --from-device/--stock-boot to detect it automatically.
                        Clears CONFIG_LOCALVERSION and hardcodes the value.
   --from-device        Read 'uname -r' from the connected phone via adb and
                        use its suffix as --localversion (recommended).
@@ -111,6 +114,9 @@ Options:
   --dist-dir DIR       Output directory (default: $DIST_DIR)
   --clang PATH         clang to use (default: auto-detect clang-12..15)
   --fast               Disable CONFIG_DEBUG_INFO (faster, smaller build)
+  --allow-release-mismatch
+                       Package the kernel even if its release does not match the
+                       phone/stock boot (not recommended: vendor modules fail).
   --patch-only         Stop after patching the kernel sources
   --no-ak3             Do not build the AnyKernel3 zip
   --fresh              Delete the work directory before starting
@@ -125,7 +131,7 @@ Examples:
   ./build.sh --install-deps
   ./build.sh --from-device
   ./build.sh --lineage lineage-23.2 --stock-boot ~/lineage-cupid-boot.img
-  ./build.sh --localversion '-gki+' --jobs 6
+  ./build.sh --localversion '-gki-geff4b40407a1' --jobs 6
 EOF
 }
 
@@ -145,6 +151,7 @@ while [ $# -gt 0 ]; do
         --dist-dir)       DIST_DIR="$2"; shift 2 ;;
         --clang)          CLANG="$2"; shift 2 ;;
         --fast)           FAST=1; shift ;;
+        --allow-release-mismatch) ALLOW_MISMATCH=1; shift ;;
         --patch-only)     PATCH_ONLY=1; shift ;;
         --no-ak3)         NO_AK3=1; shift ;;
         --fresh)          FRESH=1; shift ;;
@@ -243,31 +250,40 @@ setup_toolchain() {
     fi
 
     # LineageOS builds this kernel with clang-r416183b (clang 12) and lld.
-    local dir base
+    # Use tools from the SAME LLVM major version: clang 14 + lld 12 makes
+    # CONFIG_LTO_CLANG silently unavailable, dropping LTO and CFI.
+    local dir base found cand
     dir="$(dirname "$clang_bin")"
     for t in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-readelf llvm-strip; do
         base="$(basename "$t")"
-        if [ -x "$dir/$base" ]; then
-            ln -sfn "$dir/$base" "$tc_bin/$base"
-        else
-            local found=""
-            for v in 12 13 14 15; do
-                if [ -x "$dir/$base-$v" ]; then
-                    found="$dir/$base-$v"; break
-                fi
-                if command -v "$base-$v" >/dev/null 2>&1; then
-                    found="$(command -v "$base-$v")"; break
-                fi
-            done
-            if [ -n "$found" ]; then
-                ln -sfn "$found" "$tc_bin/$base"
+        found=""
+        for cand in \
+            "$dir/$base-$major" \
+            "$(command -v "$base-$major" 2>/dev/null || true)" \
+            "$dir/$base" \
+            "$(command -v "$base" 2>/dev/null || true)"
+        do
+            if [ -n "$cand" ] && [ -x "$cand" ]; then
+                found="$cand"
+                break
             fi
+        done
+        if [ -n "$found" ]; then
+            ln -sfn "$found" "$tc_bin/$base"
         fi
     done
 
     export PATH="$tc_bin:$PATH"
     [ -x "$tc_bin/clang" ] || die "clang not available in toolchain dir"
-    [ -x "$tc_bin/ld.lld" ] || die "ld.lld not found. Install lld (e.g. lld-12)."
+    [ -x "$tc_bin/ld.lld" ] || die "ld.lld not found. Install lld (e.g. lld-$major)."
+
+    local lld_major
+    lld_major="$(ld.lld --version 2>/dev/null | sed -nE 's/.*LLD ([0-9]+).*/\1/p' | head -n1)"
+    if [ -n "$lld_major" ] && [ "$lld_major" != "$major" ]; then
+        warn "clang is $major but ld.lld is $lld_major."
+        warn "LTO/CFI will be unavailable. Install lld-$major and re-run,"
+        warn "or use --clang /usr/bin/clang-$lld_major."
+    fi
 
     info "Toolchain: $(clang --version | head -n1)"
     info "Linker:    $(ld.lld --version | head -n1)"
@@ -298,7 +314,8 @@ elif [ -n "$STOCK_BOOT" ]; then
         info "Stock boot kernel release: $rel"
         info "Using localversion:        $KERNEL_LOCALVERSION"
     else
-        warn "Could not read a kernel release from $STOCK_BOOT; using the default -gki+ release."
+        warn "Could not read a kernel release from $STOCK_BOOT."
+        warn "Falling back to CONFIG_LOCALVERSION=-gki; vendor modules may not match."
     fi
 fi
 
@@ -462,7 +479,7 @@ configure_kernel() {
     mkdir -p "$OUT_DIR"
     cp "$defconfig_dir/gki_defconfig" "$OUT_DIR/.config"
 
-    make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 \
+    make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 LLVM=1 \
         CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
         OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
         CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -474,7 +491,7 @@ configure_kernel() {
         [ -f "$defconfig_dir/$frag" ] || die "Missing kernel config fragment: $frag"
         ( cd "$OUT_DIR" && "$KERNEL_DIR/scripts/kconfig/merge_config.sh" -m -O "$OUT_DIR" \
             "$OUT_DIR/.config" "$defconfig_dir/$frag" ) >>"$BUILD_LOG" 2>&1
-        make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 \
+        make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 LLVM=1 \
             CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -499,12 +516,17 @@ configure_kernel() {
             -e LTO_CLANG -d LTO_NONE -d LTO_CLANG_THIN -e LTO_CLANG_FULL -d THINLTO
     fi
 
-    # Hardcode the localversion only when the user asked for an exact match
+    # The source tree is always dirty after patching. With
+    # CONFIG_LOCALVERSION_AUTO=y the kernel release becomes
+    # "5.10.269-gki-<sha>-dirty", which does not match the vendor modules'
+    # vermagic. Disable AUTO and hardcode the exact stock suffix instead.
+    "$KERNEL_DIR/scripts/config" --file "$OUT_DIR/.config" -d LOCALVERSION_AUTO
     if [ -n "$KERNEL_LOCALVERSION" ]; then
-        sed -i 's/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=""/' "$OUT_DIR/.config"
+        "$KERNEL_DIR/scripts/config" --file "$OUT_DIR/.config" \
+            --set-str LOCALVERSION "$KERNEL_LOCALVERSION"
     fi
 
-    make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 \
+    make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 LLVM=1 \
         CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
         OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
         CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -515,6 +537,28 @@ configure_kernel() {
     grep -q '^CONFIG_KSU=y'              "$OUT_DIR/.config" || die "CONFIG_KSU was not enabled. See $BUILD_LOG"
     grep -q '^CONFIG_KSU_SUSFS=y'        "$OUT_DIR/.config" || die "CONFIG_KSU_SUSFS was not enabled. See $BUILD_LOG"
     grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y' "$OUT_DIR/.config" || die "SUS_PATH was not enabled. See $BUILD_LOG"
+
+    # Stock LineageOS builds this kernel with LTO + CFI. If they silently get
+    # dropped (usually a clang/lld version mismatch), the result deviates from
+    # the stock ABI and is not something we want to flash.
+    if [ "$LTO" = "full" ]; then
+        grep -q '^CONFIG_LTO_CLANG_FULL=y' "$OUT_DIR/.config" \
+            || die "Full LTO did not enable. Check that clang and lld are the same major version."
+    else
+        grep -q '^CONFIG_LTO_CLANG_THIN=y' "$OUT_DIR/.config" \
+            || die "Thin LTO did not enable. Check that clang and lld are the same major version."
+    fi
+    grep -q '^CONFIG_CFI_CLANG=y' "$OUT_DIR/.config" \
+        || die "CONFIG_CFI_CLANG did not enable. Check clang/lld versions (LLVM=1 is required)."
+
+    # Never allow the -dirty / duplicate-hash localversion regression again.
+    if grep -q '^CONFIG_LOCALVERSION_AUTO=y' "$OUT_DIR/.config"; then
+        die "CONFIG_LOCALVERSION_AUTO is still enabled; the release string would not match the ROM."
+    fi
+    if [ -n "$KERNEL_LOCALVERSION" ]; then
+        grep -qF "CONFIG_LOCALVERSION=\"$KERNEL_LOCALVERSION\"" "$OUT_DIR/.config" \
+            || die "CONFIG_LOCALVERSION was not set to '$KERNEL_LOCALVERSION'. See $BUILD_LOG"
+    fi
     if grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y' "$OUT_DIR/.config"; then
         die "KSU_TRACEPOINT_HOOK is still enabled; the SUSFS hook mode was not selected."
     fi
@@ -531,15 +575,19 @@ configure_kernel
 # ---------------------------------------------------------------------------
 info "Building Image with $JOBS jobs (this can take a while) ..."
 MAKE_ARGS=(
-    -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64
+    -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 LLVM=1
     CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy
     OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip
     CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu-
     LLVM_IAS=1 KCFLAGS="-D__ANDROID_COMMON_KERNEL__ -DKSU_NO_PREINIT" TARGET_PRODUCT="$DEVICE"
+    # Set but empty: suppresses the "+" that setlocalversion adds to dirty,
+    # untagged trees. The actual suffix lives in CONFIG_LOCALVERSION.
+    LOCALVERSION=
 )
-if [ -n "$KERNEL_LOCALVERSION" ]; then
-    MAKE_ARGS+=(LOCALVERSION="$KERNEL_LOCALVERSION")
-fi
+
+# Export, not just pass on the make command line: scripts/setlocalversion reads
+# it from the environment and uses "set but empty" to suppress the "+" suffix.
+export LOCALVERSION=""
 
 set +e
 make "${MAKE_ARGS[@]}" -j"$JOBS" Image 2>&1 | tee -a "$BUILD_LOG"
@@ -562,6 +610,12 @@ if [ -n "$EXPECTED_RELEASE" ] && [ "$RELEASE" != "$EXPECTED_RELEASE" ]; then
     warn "Rebuild with --kernel-ref <kernel commit of the installed Lineage build>,"
     warn "or update LineageOS to the newest build first."
     printf '\n'
+    if [ "$ALLOW_MISMATCH" = 1 ]; then
+        warn "Continuing because --allow-release-mismatch was given."
+    else
+        die "Refusing to package a kernel whose vermagic will not match the ROM.
+     Pass --allow-release-mismatch only if you know what you are doing."
+    fi
 elif [ -z "$EXPECTED_RELEASE" ]; then
     warn "Kernel release is $RELEASE."
     warn "Compare it with 'adb shell uname -r' before flashing; they must match."
