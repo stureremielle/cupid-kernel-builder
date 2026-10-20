@@ -40,7 +40,7 @@ on:
         required: false
         default: ""
       ota_url:
-        description: "Optional LineageOS OTA zip URL (adds a flashable dist/boot.img)"
+        description: "Optional LineageOS OTA zip URL; a direct boot.img is auto-detected too"
         required: false
         default: ""
       fast:
@@ -85,20 +85,26 @@ jobs:
             echo "Downloading stock boot.img ..."
             curl -fL --retry 3 -o boot.img "${{ inputs.boot_img_url }}"
           else
-            echo "Downloading OTA ..."
-            curl -fL --retry 3 -o ota.zip "${{ inputs.ota_url }}"
-            echo "Fetching payload-dumper-go ..."
-            pdg_url=$(curl -fsSL https://api.github.com/repos/ssut/payload-dumper-go/releases/latest \
-              | jq -r '.assets[] | select(.name | test("linux_amd64\\.tar\\.gz$")) | .browser_download_url' \
-              | head -n1)
-            test -n "$pdg_url"
-            curl -fL -o pdg.tar.gz "$pdg_url"
-            tar -xzf pdg.tar.gz
-            echo "Extracting boot partition ..."
-            ./payload-dumper-go -p boot -o bootout ota.zip
-            boot_img=$(find bootout -name 'boot.img' | head -n1)
-            test -n "$boot_img"
-            cp -f "$boot_img" boot.img
+            echo "Downloading OTA/boot image ..."
+            curl -fL --retry 3 -o download.bin "${{ inputs.ota_url }}"
+            magic=$(head -c 8 download.bin | od -An -tx1 | tr -d ' \n')
+            if [ "$magic" = "414e44524f494421" ]; then
+              echo "Input is a boot image (ANDROID!), not an OTA zip. Using it directly."
+              mv -f download.bin boot.img
+            else
+              echo "Input is an OTA/payload. Extracting boot partition ..."
+              echo "Fetching payload-dumper-go ..."
+              pdg_url=$(curl -fsSL https://api.github.com/repos/ssut/payload-dumper-go/releases/latest \
+                | jq -r '.assets[] | select(.name | test("linux_amd64\\.tar\\.gz$")) | .browser_download_url' \
+                | head -n1)
+              test -n "$pdg_url"
+              curl -fL -o pdg.tar.gz "$pdg_url"
+              tar -xzf pdg.tar.gz
+              ./payload-dumper-go -p boot -o bootout download.bin
+              boot_img=$(find bootout -name 'boot.img' | head -n1)
+              test -n "$boot_img"
+              cp -f "$boot_img" boot.img
+            fi
           fi
           ls -lh boot.img
 

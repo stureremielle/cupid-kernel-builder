@@ -100,6 +100,8 @@ Any `build.sh` flags can be appended to the `docker run` command.
      **flashable `boot.img`** artifact.
    * Alternative: put the LineageOS OTA zip URL in **`ota_url`**. The workflow
      extracts `boot.img` from the OTA and does the same (larger download).
+     A direct `boot.img` URL is also accepted there and auto-detected by its
+     `ANDROID!` magic, but `boot_img_url` is the intended input.
    * Optional: set **`kernel_ref`** if the phone is not on the newest
      LineageOS build (see “Updating LineageOS” above).
 4. Download the artifacts (`Image`, AnyKernel3 zip, optional `boot.img`,
