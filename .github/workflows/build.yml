@@ -35,6 +35,10 @@ on:
         description: "Kernel localversion suffix override (e.g. -gki-geff4b40407a1)"
         required: false
         default: ""
+      boot_img_url:
+        description: "Optional direct stock boot.img URL (faster than ota_url)"
+        required: false
+        default: ""
       ota_url:
         description: "Optional LineageOS OTA zip URL (adds a flashable dist/boot.img)"
         required: false
@@ -70,27 +74,32 @@ jobs:
       - name: Install build dependencies
         run: bash ./scripts/install-deps.sh
 
-      - name: Extract stock boot.img from OTA (optional)
-        if: inputs.ota_url != ''
+      - name: Get stock boot.img (optional)
+        if: inputs.ota_url != '' || inputs.boot_img_url != ''
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p bootwork
           cd bootwork
-          echo "Downloading OTA ..."
-          curl -fL --retry 3 -o ota.zip "${{ inputs.ota_url }}"
-          echo "Fetching payload-dumper-go ..."
-          pdg_url=$(curl -fsSL https://api.github.com/repos/ssut/payload-dumper-go/releases/latest \
-            | jq -r '.assets[] | select(.name | test("linux_amd64\\.tar\\.gz$")) | .browser_download_url' \
-            | head -n1)
-          test -n "$pdg_url"
-          curl -fL -o pdg.tar.gz "$pdg_url"
-          tar -xzf pdg.tar.gz
-          echo "Extracting boot partition ..."
-          ./payload-dumper-go -p boot -o bootout ota.zip
-          boot_img=$(find bootout -name 'boot.img' | head -n1)
-          test -n "$boot_img"
-          cp -f "$boot_img" boot.img
+          if [ -n "${{ inputs.boot_img_url }}" ]; then
+            echo "Downloading stock boot.img ..."
+            curl -fL --retry 3 -o boot.img "${{ inputs.boot_img_url }}"
+          else
+            echo "Downloading OTA ..."
+            curl -fL --retry 3 -o ota.zip "${{ inputs.ota_url }}"
+            echo "Fetching payload-dumper-go ..."
+            pdg_url=$(curl -fsSL https://api.github.com/repos/ssut/payload-dumper-go/releases/latest \
+              | jq -r '.assets[] | select(.name | test("linux_amd64\\.tar\\.gz$")) | .browser_download_url' \
+              | head -n1)
+            test -n "$pdg_url"
+            curl -fL -o pdg.tar.gz "$pdg_url"
+            tar -xzf pdg.tar.gz
+            echo "Extracting boot partition ..."
+            ./payload-dumper-go -p boot -o bootout ota.zip
+            boot_img=$(find bootout -name 'boot.img' | head -n1)
+            test -n "$boot_img"
+            cp -f "$boot_img" boot.img
+          fi
           ls -lh boot.img
 
       - name: Build kernel
@@ -106,7 +115,7 @@ jobs:
           if [ -n "${{ inputs.localversion }}" ]; then
             args+=(--localversion "${{ inputs.localversion }}")
           fi
-          if [ -n "${{ inputs.ota_url }}" ]; then
+          if [ -n "${{ inputs.ota_url }}" ] || [ -n "${{ inputs.boot_img_url }}" ]; then
             args+=(--stock-boot "$GITHUB_WORKSPACE/bootwork/boot.img")
           fi
           if [ "${{ inputs.fast }}" = "true" ]; then
@@ -140,7 +149,7 @@ jobs:
           retention-days: 30
 
       - name: Upload flashable boot.img
-        if: success() && inputs.ota_url != ''
+        if: success() && (inputs.ota_url != '' || inputs.boot_img_url != '')
         uses: actions/upload-artifact@v4
         with:
           name: boot-img-cupid-${{ inputs.lineage_branch }}

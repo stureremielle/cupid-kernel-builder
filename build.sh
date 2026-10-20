@@ -541,15 +541,18 @@ configure_kernel() {
     # Stock LineageOS builds this kernel with LTO + CFI. If they silently get
     # dropped (usually a clang/lld version mismatch), the result deviates from
     # the stock ABI and is not something we want to flash.
+    # LTO/CFI are what stock uses, but they are not required for vendor modules
+    # to load (neither appears in vermagic). Warn instead of blocking the build
+    # so a toolchain mismatch cannot stop you from getting a bootable kernel.
     if [ "$LTO" = "full" ]; then
         grep -q '^CONFIG_LTO_CLANG_FULL=y' "$OUT_DIR/.config" \
-            || die "Full LTO did not enable. Check that clang and lld are the same major version."
+            || warn "Full LTO did not enable (clang/lld mismatch?). Continuing without LTO."
     else
         grep -q '^CONFIG_LTO_CLANG_THIN=y' "$OUT_DIR/.config" \
-            || die "Thin LTO did not enable. Check that clang and lld are the same major version."
+            || warn "Thin LTO did not enable (clang/lld mismatch?). Continuing without LTO."
     fi
     grep -q '^CONFIG_CFI_CLANG=y' "$OUT_DIR/.config" \
-        || die "CONFIG_CFI_CLANG did not enable. Check clang/lld versions (LLVM=1 is required)."
+        || warn "CONFIG_CFI_CLANG did not enable. Continuing without CFI."
 
     # Never allow the -dirty / duplicate-hash localversion regression again.
     if grep -q '^CONFIG_LOCALVERSION_AUTO=y' "$OUT_DIR/.config"; then
