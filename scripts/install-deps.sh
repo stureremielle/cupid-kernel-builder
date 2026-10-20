@@ -24,7 +24,7 @@ $SUDO apt-get update
 PACKAGES=(
     build-essential git curl ca-certificates
     make patch zip unzip xz-utils zstd lz4
-    python3 python3-pip python-is-python3
+    python3 python3-pip python-is-python3 jq
     bc bison flex cpio perl rsync kmod
     libssl-dev libelf-dev libncurses-dev openssl
     device-tree-compiler dwarves

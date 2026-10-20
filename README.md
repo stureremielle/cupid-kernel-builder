@@ -93,7 +93,13 @@ Any `build.sh` flags can be appended to the `docker run` command.
 1. Create a GitHub repository and push this folder.
 2. Open **Actions → Build cupid kernel → Run workflow**.
 3. Pick the LineageOS branch (default `lineage-24.0`) and run it.
-4. Download the artifacts (`Image`, AnyKernel3 zip, config, logs).
+   * Optional: put the LineageOS OTA zip URL in **`ota_url`**. The workflow
+     downloads it, extracts the stock boot image, detects the exact kernel
+     release, and also produces a **flashable `boot.img`** artifact.
+   * Optional: set **`kernel_ref`** if the phone is not on the newest
+     LineageOS build (see “Updating LineageOS” above).
+4. Download the artifacts (`Image`, AnyKernel3 zip, optional `boot.img`,
+   config, logs).
 
 The workflow uses the same `build.sh`, so the result is identical. The free
 runner has a 6-hour limit; `thin` LTO is the default to stay well below it.
@@ -184,8 +190,9 @@ Getting `boot.img` from a LineageOS OTA zip:
 3. Extract the boot partition:
 
    ```bash
-   payload-dumper-go -p boot lineage-24.0-*-cupid.zip
-   # Windows: payload-dumper-go.exe -p boot lineage-24.0-*-cupid.zip
+   payload-dumper-go -p boot -o extracted lineage-24.0-*-cupid.zip
+   # boot.img is written under extracted/
+   # Windows: payload-dumper-go.exe -p boot -o extracted lineage-24.0-*-cupid.zip
    ```
 
 4. Repack with the new kernel (works on Windows, Linux and macOS):
