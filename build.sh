@@ -479,7 +479,7 @@ configure_kernel() {
     mkdir -p "$OUT_DIR"
     cp "$defconfig_dir/gki_defconfig" "$OUT_DIR/.config"
 
-    make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 LLVM=1 \
+    make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
         CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
         OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
         CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -491,7 +491,7 @@ configure_kernel() {
         [ -f "$defconfig_dir/$frag" ] || die "Missing kernel config fragment: $frag"
         ( cd "$OUT_DIR" && "$KERNEL_DIR/scripts/kconfig/merge_config.sh" -m -O "$OUT_DIR" \
             "$OUT_DIR/.config" "$defconfig_dir/$frag" ) >>"$BUILD_LOG" 2>&1
-        make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 LLVM=1 \
+        make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -526,7 +526,7 @@ configure_kernel() {
             --set-str LOCALVERSION "$KERNEL_LOCALVERSION"
     fi
 
-    make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 LLVM=1 \
+    make -C "$KERNEL_DIR" O="$OUT_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
         CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
         OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
         CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -541,18 +541,19 @@ configure_kernel() {
     # Stock LineageOS builds this kernel with LTO + CFI. If they silently get
     # dropped (usually a clang/lld version mismatch), the result deviates from
     # the stock ABI and is not something we want to flash.
-    # LTO/CFI are what stock uses, but they are not required for vendor modules
-    # to load (neither appears in vermagic). Warn instead of blocking the build
-    # so a toolchain mismatch cannot stop you from getting a bootable kernel.
+    # Stock GKI vendor modules are built with CFI. A non-CFI kernel can fail to
+    # resolve their __cfi_* references, so do not silently ship a kernel with
+    # LTO/CFI disabled. HAS_LTO_CLANG requires both LLVM=1 and LLVM_IAS=1 in
+    # the config pass too, not only for the build.
     if [ "$LTO" = "full" ]; then
         grep -q '^CONFIG_LTO_CLANG_FULL=y' "$OUT_DIR/.config" \
-            || warn "Full LTO did not enable (clang/lld mismatch?). Continuing without LTO."
+            || die "Full LTO did not enable. Check LLVM=1/LLVM_IAS=1 and matching clang/lld versions."
     else
         grep -q '^CONFIG_LTO_CLANG_THIN=y' "$OUT_DIR/.config" \
-            || warn "Thin LTO did not enable (clang/lld mismatch?). Continuing without LTO."
+            || die "Thin LTO did not enable. Check LLVM=1/LLVM_IAS=1 and matching clang/lld versions."
     fi
     grep -q '^CONFIG_CFI_CLANG=y' "$OUT_DIR/.config" \
-        || warn "CONFIG_CFI_CLANG did not enable. Continuing without CFI."
+        || die "CONFIG_CFI_CLANG did not enable; stock vendor modules may not load without it."
 
     # Never allow the -dirty / duplicate-hash localversion regression again.
     if grep -q '^CONFIG_LOCALVERSION_AUTO=y' "$OUT_DIR/.config"; then
